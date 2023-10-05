@@ -32,8 +32,14 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReser
 #define BLEND_MUL(x, y)	(BYTE)((double)((x) * (y)) / 255.0)
 #define BLEND_SCREEN(x, y)	(BYTE)(255.0 - (double)((255 - (x)) * (255 - (y))) / 255.0)
 
-const char* APP_NAME = "ChromatischeAbweichung";
-//enum{ kStringIDItemCaptionHue = 1, };
+const char* APP_NAME = "Posterisierung";
+
+// 各プラグインで唯一でなければならず、重複しないようにする
+const std::string MODULE_ID = "DEADBEEF-0000-0000-0000-000077770002";
+
+const int MIN_TONES = 2;
+const int MAX_TONES = 32;
+const int RGB_DIM = 3;
 
 void CreateSlider(TriglavPlugInServer* pluginServer, TriglavPlugInPropertyObject propertyObject, int captionID, int itemID, int min, int max, int defValue, int initValue, char shortcutKey) {
 	TriglavPlugInStringObject caption = NULL;
@@ -52,7 +58,11 @@ void CreateSlider(TriglavPlugInServer* pluginServer, TriglavPlugInPropertyObject
 
 
 class MyFilter {
-	int displacementX_;
+	int tones_[RGB_DIM];
+	int chIdx_[RGB_DIM];
+	enum {
+		iR, iG, iB
+	};
 	TriglavPlugInPropertyService* PropertyService_;
 
 
@@ -69,9 +79,17 @@ class MyFilter {
 			switch (itemKey) {
 			default: return;
 
-			case ID_CaptionDX:
-				if (displacementX_ != newValue)
-					displacementX_ = newValue;
+			case ID_CaptionDR:
+				if (tones_[iR] != newValue)
+					tones_[iR] = newValue;
+				break;
+			case ID_CaptionDG:
+				if (tones_[iG] != newValue)
+					tones_[iG] = newValue;
+				break;
+			case ID_CaptionDB:
+				if (tones_[iB] != newValue)
+					tones_[iB] = newValue;
 				break;
 			}
 			*result = kTriglavPlugInPropertyCallBackResultModify;
@@ -106,7 +124,7 @@ public:
 		// カテゴリ名のアクセスキーに [c]
 		TriglavPlugInFilterInitializeSetFilterCategoryName(pRecordSuite, hostObject, filterCategoryName, 'c');
 		// フィルタ名のアクセスキーに [h]
-		TriglavPlugInFilterInitializeSetFilterName(pRecordSuite, hostObject, filterName, 'h');
+		TriglavPlugInFilterInitializeSetFilterName(pRecordSuite, hostObject, filterName, 't');
 		// 開放
 		pStringService->releaseProc(filterCategoryName);
 		pStringService->releaseProc(filterName);
@@ -125,8 +143,9 @@ public:
 		PropertyService->createProc(&propertyObject);
 
 		// dx (x)
-		//CreateSlider(pluginServer, propertyObject, ID_CaptionDX, kStringIDItemCaptionHue, -100, 100, 0, 0, 'x');
-		CreateSlider(pluginServer, propertyObject, ID_CaptionDX, ID_CaptionDX, -100, 100, 0, displacementX_, 'x');
+		CreateSlider(pluginServer, propertyObject, ID_CaptionDR, ID_CaptionDR, MIN_TONES, MAX_TONES, 0, tones_[iR], 'r');
+		CreateSlider(pluginServer, propertyObject, ID_CaptionDG, ID_CaptionDG, MIN_TONES, MAX_TONES, 0, tones_[iG], 'g');
+		CreateSlider(pluginServer, propertyObject, ID_CaptionDB, ID_CaptionDB, MIN_TONES, MAX_TONES, 0, tones_[iB], 'b');
 
 		//	プロパティの設定
 		TriglavPlugInFilterInitializeSetProperty(pRecordSuite, hostObject, propertyObject);
@@ -171,7 +190,9 @@ public:
 		// スライダーは0にリセットされてしまうが、この値はそのまま。明示的に0にしないとそのぶんずれになってしまう
 		//this->displacementX_ = 0;
 		// 0戻しは面倒なので、スライダーの位置を強制的に移動することにした
-		pPropertyService->setIntegerValueProc(propertyObject, ID_CaptionDX, displacementX_);
+		pPropertyService->setIntegerValueProc(propertyObject, ID_CaptionDR, tones_[iR]);
+		pPropertyService->setIntegerValueProc(propertyObject, ID_CaptionDG, tones_[iG]);
+		pPropertyService->setIntegerValueProc(propertyObject, ID_CaptionDB, tones_[iB]);
 
 		//auto Blend8 = [](const int dst, const int src, const int mask) -> int {
 		//	return ((dst - src) * mask / 255) + src;
@@ -194,10 +215,10 @@ public:
 
 		// 元画像Bitmap を取得
 		TriglavPlugInBitmapObject sourceBitmapObject = NULL;
-		pBitmapService->createProc(&sourceBitmapObject, width, height, 3, kTriglavPlugInBitmapScanlineHorizontalLeftTop);
+		pBitmapService->createProc(&sourceBitmapObject, width, height, RGB_DIM, kTriglavPlugInBitmapScanlineHorizontalLeftTop);
 		// 画像の作業領域bitmap。1ライン目は編集元のラインを入れる、2ライン目は処理されたラインを格納
 		TriglavPlugInBitmapObject srcBmpLine = NULL;
-		pBitmapService->createProc(&srcBmpLine, width, 2, 3, kTriglavPlugInBitmapScanlineHorizontalLeftTop);
+		pBitmapService->createProc(&srcBmpLine, width, 2, RGB_DIM, kTriglavPlugInBitmapScanlineHorizontalLeftTop);
 
 		// 描画データをbitmapにコピー
 		TriglavPlugInPoint bitmapSourcePoint{ 0, 0 };
@@ -206,9 +227,8 @@ public:
 		pOffscreenService->getBitmapProc(sourceBitmapObject, &bitmapSourcePoint, sourceOffscreenObject, &offscreenSourcePoint, width, height, kTriglavPlugInOffscreenCopyModeImage);
 		
 		// Get (R,G,B) indices
-		TriglavPlugInInt rIndex, gIndex, bIndex;
-		pOffscreenService->getRGBChannelIndexProc(&rIndex, &gIndex, &bIndex, sourceOffscreenObject);
-		//LOG("Index of r, g, b=%d, %d, %d", rIndex, gIndex, bIndex);
+		TriglavPlugInInt chIdx[RGB_DIM] {};
+		pOffscreenService->getRGBChannelIndexProc(&chIdx[0], &chIdx[1], &chIdx[2], sourceOffscreenObject);
 
 		// 進捗の最大値設定 (max = height)
 		TriglavPlugInFilterRunSetProgressTotal(pRecordSuite, hostObject, height);
@@ -222,7 +242,9 @@ public:
 		*/
 
 		bool restart = true;
-		long displacement = 0;
+		//long steps = 0;
+
+		BYTE	colors[RGB_DIM][0x100];
 
 		for (long y = 0; true; ) {
 			TriglavPlugInInt processResult;
@@ -230,14 +252,19 @@ public:
 			if (restart) { // init
 				restart = false;
 				y = 0; // Y座標を戻す
-				displacement = this->displacementX_;	// ダイアログ設定値で更新
-				LOG("displacement=%d", displacement);
+				//steps = this->displacementX_;	// ダイアログ設定値で更新
+				//LOG("steps=%d", steps);
 
 				TriglavPlugInFilterRunProcess(pRecordSuite, &processResult, hostObject, kTriglavPlugInFilterRunProcessStateStart);
 				if (processResult == kTriglavPlugInFilterRunProcessResultExit) break;
 
 				// No needed to process
-				if (displacement == 0) y = height;
+				//if (steps < 2) y = height;
+
+				// create tone table
+				// becareful 0-DIV!!!
+				rep(c, RGB_DIM)
+					rep(i, tones_[c])	colors[c][i] = 255 * i / (tones_[c] - 1);
 			}
 
 			TriglavPlugInPoint bmpLinePtSrc{ 0, 0 };
@@ -250,9 +277,7 @@ public:
 				pOffscreenService->getBitmapProc(srcBmpLine, &bmpLinePtSrc, sourceOffscreenObject, &ofsLinePt, width, 1, kTriglavPlugInOffscreenCopyModeImage);
 
 				if (selectAreaOffscreenObject == NULL) { // 選択範囲なし、画像全体を更新
-				//if (1) { // 選択範囲なし、画像全体を更新
 					rep(x, width) {
-						int white = 0xFFFFFFFF;
 						BYTE* address;
 						TriglavPlugInPoint point = { x, 0 };
 						pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
@@ -262,17 +287,9 @@ public:
 						pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
 						auto dst = address;
 
-						point = { x - displacement, 0 };
-						pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
-						auto red = (x > displacement) ? address : (BYTE*)&white;
-
-						point = { x + displacement, 0 };
-						pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
-						auto blue = (x < width - displacement) ? address : (BYTE*)&white;
-
-						dst[rIndex] = red[rIndex];
-						dst[gIndex] = src[gIndex];
-						dst[bIndex] = blue[bIndex];
+						for(auto c : chIdx)
+							dst[c] = colors[c][(src[c] * tones_[c]) >> 8];
+						
 					} 
 				} else { // 選択範囲あり
 					// 2ライン目にも1ライン目と同じ画素をコピー。なぜなら、選択範囲があると更新しない画素があるので、そこに以前の画素がないと、選択範囲外が黒くなる
@@ -297,8 +314,6 @@ public:
 						if (pSelectAddressX != NULL) {
 							//if (*pDstAlphaAddressX > 0) {
 							if (*pSelectAddressX != 0) { // 薄い選択範囲が存在します、フィルタの効果も薄くなるように、別の計算
-
-								int white = 0xFFFFFFFF;
 								BYTE* address;
 								TriglavPlugInPoint point = { x, 0 };
 								pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
@@ -308,17 +323,8 @@ public:
 								pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
 								auto dst = address;
 
-								point = { x - displacement, 0 };
-								pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
-								auto red = (x > displacement) ? address : (BYTE*)&white;
-
-								point = { x + displacement, 0 };
-								pBitmapService->getAddressProc((TriglavPlugInPtr*)&address, srcBmpLine, &point);
-								auto blue = (x < width - displacement) ? address : (BYTE*)&white;
-
-								dst[rIndex] = red[rIndex];
-								dst[gIndex] = src[gIndex];
-								dst[bIndex] = blue[bIndex];
+								for (auto c : chIdx)
+									dst[c] = colors[c][(src[c] * tones_[c]) >> 8];
 								//PIHSVFilter::SetHSV8Mask(pDstImageAddressX[r], pDstImageAddressX[g], pDstImageAddressX[b], *pSelectAddressX, hue, saturation, value);
 							}
 							// *pSelectAddressX == 0 の時は選択範囲外です。そのため、処理none
@@ -364,7 +370,9 @@ public:
 	}
 
 	//MyFilter(TriglavPlugInPropertyService *propService) : displacementX_(0), PropertyService_(propService) {}
-	MyFilter() : displacementX_(0), PropertyService_(NULL) {}
+	MyFilter() : PropertyService_(NULL) {
+		for(auto &it :tones_) it = MIN_TONES;
+	}
 };
 
 
@@ -387,10 +395,8 @@ TriglavPlugInInt ModuleInitialize(TriglavPlugInPtr* data, TriglavPlugInServer* p
 		if (hostVersion >= kTriglavPlugInNeedHostVersion) {
 			// モジュール初期化レコードに moduleID を設定。
 			TriglavPlugInStringObject	moduleID = NULL;
-			// 各プラグインで唯一でなければならず、重複しないようにする
-			std::string moduleIDString = "DEADBEEF-0000-0000-0000-000077770001";
 
-			pStringService->createWithAsciiStringProc(&moduleID, moduleIDString.c_str(), moduleIDString.size());
+			pStringService->createWithAsciiStringProc(&moduleID, MODULE_ID.c_str(), MODULE_ID.size());
 			pModuleInitializeRecord->setModuleIDProc(hostObject, moduleID);
 			// 初期化レコードにプラグインの種類を設定 (フィルタのプラグイン = kTriglavPlugInModuleSwitchKindFilter)
 			pModuleInitializeRecord->setModuleKindProc(hostObject, kTriglavPlugInModuleSwitchKindFilter);
@@ -403,7 +409,7 @@ TriglavPlugInInt ModuleInitialize(TriglavPlugInPtr* data, TriglavPlugInServer* p
 
 			// 登録成功
 			ret = kTriglavPlugInCallResultSuccess;
-			LOG("%s: SUCCESS: %s", APP_NAME, moduleIDString.c_str())
+			LOG("%s: SUCCESS: %s", APP_NAME, MODULE_ID.c_str())
 		}
 	}
 
@@ -453,4 +459,3 @@ void TRIGLAV_PLUGIN_API TriglavPluginCall(TriglavPlugInInt* result, TriglavPlugI
 		break;
 	}
 }
-
