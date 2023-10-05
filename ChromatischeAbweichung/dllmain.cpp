@@ -171,7 +171,7 @@ public:
 		// スライダーは0にリセットされてしまうが、この値はそのまま。明示的に0にしないとそのぶんずれになってしまう
 		//this->displacementX_ = 0;
 		// 0戻しは面倒なので、スライダーの位置を強制的に移動することにした
-		pPropertyService->setIntegerValueProc(propertyObject, kStringIDItemCaptionHue, displacementX_);
+		pPropertyService->setIntegerValueProc(propertyObject, ID_CaptionDX, displacementX_);
 
 		auto Blend8 = [](const int dst, const int src, const int mask) -> int {
 			return ((dst - src) * mask / 255) + src;
